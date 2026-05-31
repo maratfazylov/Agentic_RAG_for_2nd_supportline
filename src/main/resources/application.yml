@@ -1,0 +1,48 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: hybrid-rag-agent
+
+telegram:
+  bot:
+    token: ${TELEGRAM_BOT_TOKEN}
+    username: ${TELEGRAM_BOT_USERNAME}
+
+openrouter:
+  api-key: ${OPENROUTER_API_KEY}
+  model: ${OPENROUTER_MODEL:openai/gpt-4o-mini}
+  base-url: ${OPENROUTER_BASE_URL:https://openrouter.ai/api/v1}
+  max-tokens: ${AGENT_MAX_TOKENS:2048}
+  temperature: ${AGENT_TEMPERATURE:0.7}
+
+redis:
+  host: ${REDIS_HOST:localhost}
+  port: ${REDIS_PORT:6379}
+  password: ${REDIS_PASSWORD:}
+
+embedding:
+  model: ${EMBEDDING_MODEL:text-embedding-3-small}
+  dimension: ${EMBEDDING_DIMENSION:1536}
+
+agent:
+  system-prompt: ${AGENT_SYSTEM_PROMPT:You are a helpful Hybrid RAG AI Agent. Use the provided context to answer questions accurately.}
+  max-history: 50
+
+expert:
+  activity:
+    threshold: ${EXPERT_ACTIVITY_THRESHOLD:5}
+    window-days: ${EXPERT_ACTIVITY_WINDOW_DAYS:30}
+  routing:
+    threshold: ${EXPERT_ROUTING_THRESHOLD:0.6}
+
+rag:
+  rrf-k: ${RRF_K:60}
+  source-weight:
+    confluence: ${RAG_WEIGHT_CONFLUENCE:0.6}
+    redis-vector: ${RAG_WEIGHT_REDIS:0.4}
+
+logging:
+  level:
+    com.hybridrag: DEBUG
