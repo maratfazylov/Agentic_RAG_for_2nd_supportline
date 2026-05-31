@@ -62,6 +62,7 @@ public class AtlassianMcpStub implements AtlassianMcpClient {
         return Optional.ofNullable(PAGE_OWNERS.get(topic.toLowerCase()));
     }
 
+    @Override
     public List<Document> searchAsDocuments(String query, int limit) {
         return searchPages(query, limit).stream()
             .map(this::toDocument)

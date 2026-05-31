@@ -21,20 +21,6 @@ public class AtlassianKnowledgeSource implements KnowledgeSource {
 
     @Override
     public List<Document> search(String query, int topK) {
-        if (atlassianClient instanceof AtlassianMcpStub stub) {
-            return stub.searchAsDocuments(query, topK);
-        }
-        return atlassianClient.searchPages(query, topK).stream()
-            .map(p -> {
-                var doc = new Document(p.pageId(), p.title() + "\n" + p.body(), "confluence/" + p.spaceKey());
-                doc.setMetadata(java.util.Map.of(
-                    "pageId", p.pageId(),
-                    "spaceKey", p.spaceKey(),
-                    "author", p.author(),
-                    "lastModified", p.lastModified()
-                ));
-                return doc;
-            })
-            .toList();
+        return atlassianClient.searchAsDocuments(query, topK);
     }
 }
