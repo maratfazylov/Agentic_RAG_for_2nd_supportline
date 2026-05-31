@@ -69,7 +69,7 @@ public class TelegramBot implements LongPollingSingleThreadUpdateConsumer {
             sendMessage(chatId, response);
         } catch (Exception e) {
             log.error("Error handling message: {}", e.getMessage(), e);
-            sendMessage(chatId, "Извините, произошла ошибка: " + e.getMessage());
+            sendMessage(chatId, "Извините, произошла ошибка. Попробуйте ещё раз.");
         }
     }
 

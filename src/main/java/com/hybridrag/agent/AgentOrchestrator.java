@@ -59,6 +59,15 @@ public class AgentOrchestrator {
     }
 
     public String handle(String userId, Long chatId, String query, String username) {
+        try {
+            return handleInternal(userId, chatId, query, username);
+        } catch (Exception e) {
+            log.error("Error handling query from user={}: {}", userId, query, e);
+            return "Не удалось обработать запрос. Попробуйте переформулировать вопрос.";
+        }
+    }
+
+    private String handleInternal(String userId, Long chatId, String query, String username) {
         log.info("Handling query from user={} ({}): {}", userId, username, query);
 
         // 1. RAG Fusion: paraphrase → N×retrieve → RRF
