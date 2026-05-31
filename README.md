@@ -1,8 +1,26 @@
-# Hybrid RAG AI Agent
+# Hybrid RAG AI Agent for 2nd Line Support
 
-> Telegram bot + OpenRouter LLM + Redis Vector Store + Atlassian MCP + Expert Routing + RAG Fusion — в Docker
+> L2/L3 engineers spend 40+ minutes per incident manually searching past tickets and runbooks.  
+> This agent cuts that — routing questions to the right expert and surfacing relevant context automatically.
 
-## Архитектура
+RAG Fusion over Confluence knowledge base + activity-based expert scoring + Telegram interface.  
+Built in Java 21 / Spring Boot 3.4. Runs in Docker Compose in one command.
+
+---
+
+## The Problem
+
+When an incident hits, an engineer has to:
+1. Manually search Confluence for relevant runbooks
+2. Remember (or ask around) who owns this service/topic
+3. Wait for a response from whoever might know
+
+This agent replaces steps 1–3 with an automated pipeline:  
+**question → retrieve context → find the right expert → forward with context**.
+
+---
+
+## Architecture
 
 ```
 ┌──────────────┐     ┌────────────────────────────────────────────────────────────┐
@@ -11,22 +29,20 @@
 └──────────────┘     │  ┌───────────┐  ┌────────────────────────────────────┐     │
                      │  │ Telegram  │  │        AgentOrchestrator            │     │
                      │  │ Bot       │──►                                    │     │
-                     │  │ +AnswerTr │  │  ┌──────────────────────────────┐  │     │
-                     │  │  tracker  │  │  │ RagFusion                     │  │     │
-                     │  └───────────┘  │  │  ┌────────────────────────┐  │  │     │
-                     │                 │  │  │ QueryParaphraser (×3)  │  │  │     │
-                     │                 │  │  │   → HybridRetrieve(×4) │  │  │     │
-                     │                 │  │  │   → ReciprocalRankFus. │  │  │     │
-                     │                 │  │  └────────────────────────┘  │  │     │
+                     │  │ +Answer   │  │  ┌──────────────────────────────┐  │     │
+                     │  │  Tracker  │  │  │ RagFusion                    │  │     │
+                     │  └───────────┘  │  │  QueryParaphraser (×3)       │  │     │
+                     │                 │  │  → HybridRetrieve (×4 async) │  │     │
+                     │                 │  │  → ReciprocalRankFusion       │  │     │
                      │                 │  └──────────────────────────────┘  │     │
                      │                 │                                    │     │
                      │                 │  ┌──────────────────────────────┐  │     │
                      │                 │  │ ExpertRouter                 │  │     │
-                     │                 │  │  → QuestionClassifier        │  │     │
-                     │                 │  │  → ExpertResolver            │  │     │
-                     │                 │  │     ├─ AnswerTracker          │  │     │
-                     │                 │  │     ├─ AtlassianMcpStub       │  │     │
-                     │                 │  │     └─ ExpertRegistry         │  │     │
+                     │                 │  │  QuestionClassifier          │  │     │
+                     │                 │  │  ExpertResolver              │  │     │
+                     │                 │  │   ├─ AnswerTracker (Redis)   │  │     │
+                     │                 │  │   ├─ AtlassianMcpStub        │  │     │
+                     │                 │  │   └─ ExpertRegistry          │  │     │
                      │                 │  └──────────────────────────────┘  │     │
                      │                 │                                    │     │
                      │                 │  ┌────────────┐ ┌──────────────┐  │     │
@@ -35,32 +51,143 @@
                      │                 └──────────┬─────────────────────────┘     │
                      │                            │                               │
                      │                 ┌──────────▼────────────────────────┐      │
-                     │                 │          OpenRouter API           │      │
-                     │                 │     (LLM + Embeddings)            │      │
+                     │                 │        OpenRouter API              │      │
+                     │                 │     (LLM + Embeddings)             │      │
                      │                 └───────────────────────────────────┘      │
                      └────────────────────────────────────────────────────────────┘
 ```
 
-## Стек
+---
 
-| Компонент            | Технология                                          |
-|----------------------|------------------------------------------------------|
-| Язык                 | Java 21                                              |
-| Фреймворк            | Spring Boot 3.4                                      |
-| Telegram API         | telegrambots-spring-boot-starter 7.11                |
-| LLM Provider         | OpenRouter (openai/gpt-4o-mini)                      |
-| Vector Store         | Redis Stack (RediSearch + JSON + Vector Search)      |
-| Enterprise KB        | Atlassian MCP (Confluence) — stub, `@Profile("!prod")` |
-| HTTP Client          | OkHttp 4                                             |
-| JSON                 | Jackson                                              |
-| Сборка               | Maven                                                |
-| Деплой               | Docker Compose                                       |
+## RAG Fusion Pipeline
 
-## Структура проекта
+Classic single-query RAG misses semantically equivalent questions phrased differently.  
+RAG Fusion generates multiple query variants and merges results via Reciprocal Rank Fusion:
+
+```
+User query
+    │
+    ├── QueryParaphraser → 3 paraphrased variants via LLM
+    │
+    ├── allQueries = [original, p1, p2, p3]
+    │
+    ├── CompletableFuture (parallel):
+    │     q1 → HybridRagEngine → Redis FT.SEARCH + Confluence
+    │     q2 → HybridRagEngine → Redis FT.SEARCH + Confluence
+    │     q3 → HybridRagEngine → Redis FT.SEARCH + Confluence
+    │     q4 → HybridRagEngine → Redis FT.SEARCH + Confluence
+    │
+    └── ReciprocalRankFusion.merge()
+          score(d) = Σ 1/(60 + rank_i(d))
+          → fused + reranked List<Document>
+```
+
+**Why RRF over simple score averaging:** documents appearing in multiple query results get boosted proportionally to their rank consistency, not just raw similarity scores. This handles vocabulary mismatch without tuning per-source weights.
+
+---
+
+## Expert Resolver Chain
+
+When the classifier identifies a known topic with sufficient confidence, `ExpertResolver` finds the right person — not just by static assignment, but by actual activity:
+
+```
+ExpertResolver.resolve(topic)
+    │
+    ├── 1. AnswerTracker.getTopExperts(topic)
+    │         ZREVRANGE activity:{topic} — who actually answered lately
+    │         score >= expert.activity.threshold → pick this person
+    │
+    ├── 2. AtlassianMcpClient.getPageOwner(topic)
+    │         Last editor of the Confluence page owns the topic
+    │         (stub in dev, real MCP endpoint in prod)
+    │
+    ├── 3. ExpertRegistry.getExperts(topic)
+    │         Static fallback — manually maintained Redis hash
+    │
+    └── 4. Optional.empty() → ANSWER_DIRECTLY
+```
+
+**Why this order matters:** static registries go stale. Activity tracking reflects who is *actually* helping today, not who was assigned 6 months ago.
+
+---
+
+## Answer Activity Tracking
+
+Every reply in Telegram closes the feedback loop:
+
+```
+User replies to a question
+    │
+    ├── TelegramBot detects reply_to_message
+    ├── AnswerTracker.trackAnswer(chatId, replyToMessageId, username)
+    │     → looks up topic by questionMessageId (TTL 24h)
+    │     → ZINCRBY activity:{topic} 1 username
+    │     → SETEX lastSeen:{topic}:{username} (30d TTL)
+    │
+    └── ExpertResolver reads this score next time
+```
+
+```bash
+# Inspect expert activity for a topic:
+redis-cli ZREVRANGE activity:kafka 0 -1 WITHSCORES
+```
+
+---
+
+## Expert Escalation Message
+
+When routing to an expert, the bot forwards a structured message to their Telegram DM:
+
+```
+📌 New question about: kafka
+From: @engineer_name
+
+How do I tune Kafka consumer lag for a high-throughput topic?
+
+— sent via KnowledgeBot
+```
+
+The general chat receives: *"Forwarded to @kafka_owner — they own this area. Usually responds within an hour."*
+
+---
+
+## Atlassian MCP — Stub vs Production
+
+```java
+@Component
+@Profile("!prod")   // stub only in dev/staging
+public class AtlassianMcpStub implements AtlassianMcpClient {
+    // 8 fake Confluence pages: kafka, spark, data-vault,
+    // incident-response, redis, yarn, etl-pipeline, data-quality
+}
+```
+
+In production: swap `AtlassianMcpStub` for a real MCP endpoint bean with `@Profile("prod")`.  
+**Routing and RAG logic are unchanged** — the interface contract stays the same.
+
+---
+
+## Stack
+
+| Component      | Technology                                              |
+|----------------|---------------------------------------------------------|
+| Language        | Java 21                                                |
+| Framework       | Spring Boot 3.4                                        |
+| Telegram API    | telegrambots-spring-boot-starter 7.11                  |
+| LLM Provider    | OpenRouter (openai/gpt-4o-mini)                        |
+| Vector Store    | Redis Stack (RediSearch + JSON + KNN Vector Search)    |
+| Enterprise KB   | Atlassian MCP (Confluence) — stub, `@Profile("!prod")` |
+| HTTP Client     | OkHttp 4                                               |
+| Build           | Maven                                                  |
+| Deploy          | Docker Compose                                         |
+
+---
+
+## Project Structure
 
 ```
 src/main/java/com/hybridrag/
-├── HybridRagAgentApplication.java       # Точка входа (Spring Boot)
+├── HybridRagAgentApplication.java
 │
 ├── config/
 │   ├── RedisConfig.java                 # Jedis Pooled connection
@@ -72,210 +199,134 @@ src/main/java/com/hybridrag/
 │   └── QueryContext.java                # query + history + username + retrieved docs
 │
 ├── bot/
-│   ├── TelegramBot.java                 # Long-polling consumer + forwardToExpert
+│   ├── TelegramBot.java                 # Long-polling + forwardToExpert
 │   └── BotConfig.java                   # Token + username beans
 │
 ├── llm/
 │   ├── LLMService.java                  # Interface: chat + embed
-│   └── OpenRouterClient.java            # HTTP вызовы OpenRouter API
+│   └── OpenRouterClient.java            # HTTP calls to OpenRouter API
 │
 ├── knowledge/
-│   ├── KnowledgeSource.java             # Общий интерфейс источника знаний
-│   ├── RedisKnowledgeSource.java        # Адаптер VectorStore → KnowledgeSource
-│   ├── AtlassianMcpClient.java          # Интерфейс Atlassian MCP
-│   ├── AtlassianMcpStub.java            # @Profile("!prod"), getPageOwner
-│   ├── AtlassianKnowledgeSource.java    # Адаптер MCP → KnowledgeSource
-│   └── ConfluencePage.java              # record: pageId, title, spaceKey, body, ...
+│   ├── KnowledgeSource.java             # Common retrieval interface
+│   ├── RedisKnowledgeSource.java        # VectorStore → KnowledgeSource adapter
+│   ├── AtlassianMcpClient.java          # Atlassian MCP interface
+│   ├── AtlassianMcpStub.java            # @Profile("!prod") dev stub
+│   ├── AtlassianKnowledgeSource.java    # MCP → KnowledgeSource adapter
+│   └── ConfluencePage.java              # record: pageId, title, spaceKey, body
 │
 ├── rag/
-│   ├── RagEngine.java                   # Retrieval + prompt builder (fallback)
-│   ├── HybridRagEngine.java             # Параллельный search по всем KnowledgeSource
-│   ├── SourceMerger.java                # Взвешенный rerank результатов
-│   ├── RagFusion.java                   # Fusion оркестратор
-│   ├── QueryParaphraser.java            # LLM → N перефразированных запросов
+│   ├── HybridRagEngine.java             # Parallel search across all KnowledgeSources
+│   ├── SourceMerger.java                # Weighted rerank by source
+│   ├── RagFusion.java                   # Fusion orchestrator
+│   ├── QueryParaphraser.java            # LLM → N paraphrased queries
 │   ├── ReciprocalRankFusion.java        # RRF: score = Σ 1/(k + rank)
-│   ├── EmbeddingService.java            # Обёртка над LLMService.embed
-│   └── DocumentChunker.java             # Разбивка текста на чанки
+│   ├── EmbeddingService.java            # Wrapper over LLMService.embed
+│   └── DocumentChunker.java            # Text chunking strategies
 │
 ├── routing/
-│   ├── ExpertRegistry.java              # Redis hash: topic → [эксперты]
+│   ├── ExpertRegistry.java              # Redis hash: topic → [experts]
 │   ├── ExpertProperties.java            # @ConfigurationProperties(prefix = "expert")
-│   ├── ExpertResolver.java              # Цепочка: activity → Confluence → registry
-│   ├── ExpertRouter.java                # Classifier + Resolver → эскалация
-│   ├── QuestionClassifier.java          # LLM-based классификация (+ history context)
-│   └── AnswerTracker.java               # Activity tracking (ZINCRBY)
+│   ├── ExpertResolver.java              # Chain: activity → Confluence → registry
+│   ├── ExpertRouter.java                # Classifier + Resolver → escalation decision
+│   ├── QuestionClassifier.java          # LLM classification with conversation history
+│   └── AnswerTracker.java               # ZINCRBY activity tracking
 │
 ├── agent/
-│   ├── AgentOrchestrator.java           # Главный цикл агента
-│   └── ConversationMemory.java          # История диалогов в Redis
+│   ├── AgentOrchestrator.java           # Main agent loop
+│   └── ConversationMemory.java          # Redis-backed conversation history
 │
 ├── store/
 │   ├── VectorStore.java                 # Interface: similarity search
-│   └── RedisVectorStore.java            # Redis JSON + FT.SEARCH (FLAT, COSINE)
+│   └── RedisVectorStore.java            # Redis JSON + FT.SEARCH FLAT COSINE
 │
 └── tool/
     ├── Tool.java                        # Interface: name + execute
-    ├── ToolRegistry.java                # Регистратор + парсинг вызовов
-    └── WeatherTool.java                 # Пример тула (заглушка)
+    ├── ToolRegistry.java                # Plugin registry + call parsing
+    └── WeatherTool.java                 # Example tool stub
 ```
 
-## Hybrid RAG + Fusion Pipeline
+---
 
-```
-User query
-    │
-    ├──► RagFusion.search(query, topK=10)
-    │       │
-    │       ├── QueryParaphraser.paraphrase(query, 3)
-    │       │     → LLM генерирует 3 варианта
-    │       │
-    │       ├── allQueries = [original, p1, p2, p3]  ← 4 запроса
-    │       │
-    │       ├── Параллельно (CompletableFuture):
-    │       │     q1 → HybridRagEngine.retrieve → Redis FT.SEARCH + Confluence
-    │       │     q2 → HybridRagEngine.retrieve → Redis FT.SEARCH + Confluence
-    │       │     q3 → HybridRagEngine.retrieve → Redis FT.SEARCH + Confluence
-    │       │     q4 → HybridRagEngine.retrieve → Redis FT.SEARCH + Confluence
-    │       │
-    │       └── ReciprocalRankFusion.merge(perQueryResults)
-    │             score(d) = Σ 1/(60 + rank_i(d))
-    │             → fused + reranked List<Document>
-    │
-    ├──► ExpertRouter.route()
-    │       QuestionClassifier.classify(query, topics, history)
-    │       → topic + confidence
-    │       Если confidence < threshold → ROUTE_TO_EXPERT
-    │
-    ├──► RagFusion.buildFusionPrompt(query, fusion)
-    │       System + [FusedDocument[0..N]] + User query
-    │
-    ├──► LLM chat completion → OpenRouter
-    │
-    └──► Response → Telegram
-```
-
-## Expert Resolver Chain
-
-При классификации вопроса в известный topic, `ExpertResolver` ищет эксперта в порядке приоритета:
-
-```
-ExpertResolver.resolve(topic)
-    │
-    ├── 1. AnswerTracker.getTopExperts(topic, 3)
-    │       • ZREVRANGE activity:{topic}
-    │       • score >= expert.activity.threshold (default: 5)
-    │
-    ├── 2. AtlassianMcpClient.getPageOwner(topic)
-    │       • AtlassianMcpStub.PAGE_OWNERS map
-    │       • В проде — Confluence page metadata
-    │
-    ├── 3. ExpertRegistry.getExperts(topic)
-    │       • Статический Redis hash
-    │
-    └── 4. Optional.empty() → ANSWER_DIRECTLY
-```
-
-## Answer Tracking
-
-`AnswerTracker` использует Redis для activity-based рейтинга:
-
-- **`trackQuestion`** — `SETEX question:{chatId}:{msgId}` → topic (TTL 24h)
-- **`trackAnswer`** — при reply в Telegram: `ZINCRBY activity:{topic}` +1 + `SETEX lastSeen:{topic}:{user}` (30d)
-- **`getTopExperts`** — `ZREVRANGE activity:{topic}` WITHSCORES, фильтр по lastSeen
-
-```bash
-# Просмотреть топ экспертов по Kafka:
-redis-cli ZREVRANGE activity:kafka 0 -1 WITHSCORES
-```
-
-## Atlassian MCP Stub
-
-```java
-@Component
-@Profile("!prod")   // заглушка только в dev
-public class AtlassianMcpStub implements AtlassianMcpClient { ... }
-```
-
-8 фейковых Confluence страниц по темам Kafka, Spark, Data Vault, Incident Response.  
-Также содержит `PAGE_OWNERS` map для `getPageOwner()`.
-
-В продакшене заменяется на реальный MCP endpoint — routing и RAG логика не меняются.
-
-## Expert Routing
-
-`ExpertRouter` использует `@ConfigurationProperties(prefix = "expert")`:
+## Configuration
 
 ```yaml
 expert:
   activity:
-    threshold: 5        # минимальный score для выбора по activity
-    window-days: 30
+    threshold: 5          # min activity score to trust over static registry
+    window-days: 30       # lookback window for activity scoring
   routing:
-    threshold: 0.6      # порог уверенности классификатора
+    threshold: 0.6        # classifier confidence threshold for escalation
+
+rag:
+  rrf-k: 60               # RRF constant
+
+spring:
+  task:
+    execution:
+      pool:
+        core-size: 4
+        max-size: 10
+        queue-capacity: 50
 ```
 
-`QuestionClassifier.classify()` получает контекст последних сообщений диалога.
+## Environment Variables
 
-При эскалации `TelegramBot.forwardToExpert()` шлёт эксперту личное сообщение:
+| Variable                        | Default                 | Description                        |
+|---------------------------------|-------------------------|------------------------------------|
+| `TELEGRAM_BOT_TOKEN`            | —                       | Telegram bot token                 |
+| `TELEGRAM_BOT_USERNAME`         | —                       | Bot username                       |
+| `OPENROUTER_API_KEY`            | —                       | OpenRouter API key                 |
+| `OPENROUTER_MODEL`              | openai/gpt-4o-mini      | Chat model                         |
+| `REDIS_HOST`                    | localhost               | Redis host                         |
+| `REDIS_PORT`                    | 6379                    | Redis port                         |
+| `EMBEDDING_MODEL`               | text-embedding-3-small  | Embedding model                    |
+| `EMBEDDING_DIMENSION`           | 1536                    | Vector dimension                   |
+| `EXPERT_ROUTING_THRESHOLD`      | 0.6                     | Classifier confidence threshold    |
+| `EXPERT_ACTIVITY_THRESHOLD`     | 5                       | Min score for activity-based pick  |
+| `EXPERT_ACTIVITY_WINDOW_DAYS`   | 30                      | Activity lookback window           |
+| `RRF_K`                         | 60                      | RRF constant k                     |
+| `RAG_WEIGHT_CONFLUENCE`         | 0.6                     | Confluence source weight           |
+| `RAG_WEIGHT_REDIS`              | 0.4                     | Redis vector source weight         |
+
+---
+
+## Quick Start
+
+```bash
+cp .env.example .env      # fill in your tokens
+docker compose up -d      # Redis Stack + agent
 ```
-📌 New question about: {topic}
-From: @{username}
 
-{question}
+Send a message to your bot in Telegram. If it looks like a technical question (contains `?` + embedding similarity > 0.65), the agent will retrieve context and either answer directly or escalate to an expert.
 
-— sent via KnowledgeBot
-```
+---
 
-## Переменные окружения
-
-| Переменная                     | По умолчанию                   | Описание                           |
-|--------------------------------|--------------------------------|------------------------------------|
-| TELEGRAM_BOT_TOKEN             | —                              | Токен Telegram бота                |
-| TELEGRAM_BOT_USERNAME          | —                              | Username бота                      |
-| OPENROUTER_API_KEY             | —                              | API ключ OpenRouter                |
-| OPENROUTER_MODEL               | openai/gpt-4o-mini             | Модель для chat                    |
-| REDIS_HOST                     | localhost                      | Хост Redis                         |
-| REDIS_PORT                     | 6379                           | Порт Redis                         |
-| EMBEDDING_MODEL                | text-embedding-3-small         | Модель для embeddings              |
-| EMBEDDING_DIMENSION            | 1536                           | Размерность вектора                |
-| EXPERT_ROUTING_THRESHOLD       | 0.6                            | Порог уверенности для роутинга     |
-| EXPERT_ACTIVITY_THRESHOLD      | 5                              | Мин. score для выбора по activity  |
-| EXPERT_ACTIVITY_WINDOW_DAYS    | 30                             | Окно активности эксперта           |
-| RRF_K                          | 60                             | Константа RRF (Reciprocal Rank)    |
-| RAG_WEIGHT_CONFLUENCE          | 0.6                            | Вес источника Confluence           |
-| RAG_WEIGHT_REDIS               | 0.4                            | Вес источника Redis vector         |
-
-## Tool System
+## Extending with Custom Tools
 
 ```java
 @Component
 public class MyTool implements Tool {
-    public MyTool(ToolRegistry registry) { this.registry = registry; }
-    @PostConstruct void init() { registry.register(this); }
+    public MyTool(ToolRegistry registry) { registry.register(this); }
     public String getName() { return "mytool"; }
     public String execute(String args, QueryContext ctx) { return "result"; }
 }
 ```
 
-## Быстрый старт
-
-```bash
-cp .env.example .env   # заполнить токены
-docker compose up -d    # Redis Stack + агент
-```
+---
 
 ## Roadmap
 
-- [x] Базовая архитектура (Spring Boot + Telegram + OpenRouter + Redis)
 - [x] Hybrid RAG (Redis vector + Confluence MCP stub)
-- [x] RAG Fusion (paraphrase → N×retrieve → RRF)
-- [x] Expert routing (resolver chain: activity → Confluence → registry)
-- [x] Answer activity tracking (ZINCRBY)
-- [x] @ConfigurationProperties
-- [x] Docker Compose
-- [ ] REST API для индексации (`POST /api/documents/index`)
-- [ ] OpenRouter function calling (нативный)
-- [ ] Ingestion: PDF/TXT/URL
-- [ ] Web UI
-- [ ] Unit / integration tests
+- [x] RAG Fusion (paraphrase → N×parallel retrieve → RRF)
+- [x] Activity-based expert resolver chain
+- [x] Answer tracking feedback loop (ZINCRBY)
+- [x] Conversation history in classifier context
+- [x] Real Telegram forwarding to expert DM
+- [x] Docker Compose deploy
+- [ ] REST API for document indexing (`POST /api/documents/index`)
+- [ ] PDF / URL ingestion pipeline
+- [ ] Unit + integration tests
+- [ ] Eval benchmark (retrieval precision, answer faithfulness)
+- [ ] LangFuse observability integration
 - [ ] CI/CD (GitHub Actions)
+- [ ] GraphRAG layer for multi-hop Confluence page relationships
