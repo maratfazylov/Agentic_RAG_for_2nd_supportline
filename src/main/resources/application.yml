@@ -4,6 +4,12 @@ server:
 spring:
   application:
     name: hybrid-rag-agent
+  task:
+    execution:
+      pool:
+        core-size: 4
+        max-size: 10
+        queue-capacity: 50
 
 telegram:
   bot:

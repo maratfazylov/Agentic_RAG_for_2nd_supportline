@@ -11,24 +11,35 @@ import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.meta.generics.TelegramClient;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 @Component
 public class TelegramBot implements LongPollingSingleThreadUpdateConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(TelegramBot.class);
 
+    private static final int POOL_SIZE = 4;
+
     private final TelegramClient telegramClient;
     private final AgentOrchestrator orchestrator;
     private final AnswerTracker answerTracker;
+    private final ExecutorService executor;
 
     public TelegramBot(TelegramClient telegramClient, AgentOrchestrator orchestrator,
                        AnswerTracker answerTracker) {
         this.telegramClient = telegramClient;
         this.orchestrator = orchestrator;
         this.answerTracker = answerTracker;
+        this.executor = Executors.newFixedThreadPool(POOL_SIZE);
     }
 
     @Override
     public void consume(Update update) {
+        executor.submit(() -> processUpdate(update));
+    }
+
+    private void processUpdate(Update update) {
         if (!update.hasMessage() || !update.getMessage().hasText()) return;
 
         var message = update.getMessage();
