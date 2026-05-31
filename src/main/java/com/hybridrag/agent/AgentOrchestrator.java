@@ -7,6 +7,7 @@ import com.hybridrag.model.QueryContext;
 import com.hybridrag.rag.RagEngine;
 import com.hybridrag.rag.RagFusion;
 import com.hybridrag.routing.AnswerTracker;
+import com.hybridrag.routing.ExpertRegistry;
 import com.hybridrag.routing.ExpertRouter;
 import com.hybridrag.tool.ToolRegistry;
 import org.slf4j.Logger;
@@ -30,6 +31,7 @@ public class AgentOrchestrator {
     private final ToolRegistry toolRegistry;
     private final ExpertRouter expertRouter;
     private final AnswerTracker answerTracker;
+    private final ExpertRegistry expertRegistry;
     private final TelegramBot telegramBot;
 
     @Value("${agent.system-prompt}")
@@ -39,6 +41,7 @@ public class AgentOrchestrator {
                              RagFusion ragFusion, ConversationMemory memory,
                              ToolRegistry toolRegistry, ExpertRouter expertRouter,
                              AnswerTracker answerTracker,
+                             ExpertRegistry expertRegistry,
                              @Lazy TelegramBot telegramBot) {
         this.llmService = llmService;
         this.ragEngine = ragEngine;
@@ -47,6 +50,7 @@ public class AgentOrchestrator {
         this.toolRegistry = toolRegistry;
         this.expertRouter = expertRouter;
         this.answerTracker = answerTracker;
+        this.expertRegistry = expertRegistry;
         this.telegramBot = telegramBot;
     }
 
@@ -79,8 +83,15 @@ public class AgentOrchestrator {
         if (route.action() == ExpertRouter.RouteAction.ROUTE_TO_EXPERT) {
             var expert = route.expert();
             log.info("Routing to expert {} (topic={})", expert.name(), route.classification().topic());
+            var chatId = expertRegistry.getChatId(expert.name());
+            if (chatId == null) {
+                telegramBot.sendToChat(ctx.getChatId(),
+                    "Вопрос для @" + expert.name() + " по теме " + route.classification().topic()
+                    + ". Эксперт будет уведомлён.");
+                return "Эксперт @" + expert.name() + " будет уведомлён о вашем вопросе.";
+            }
             telegramBot.forwardToExpert(
-                expert.telegramChatId(),
+                chatId,
                 ctx.getQuery(),
                 ctx.getUsername(),
                 route.classification().topic()

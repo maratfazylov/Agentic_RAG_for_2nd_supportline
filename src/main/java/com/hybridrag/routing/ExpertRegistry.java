@@ -50,6 +50,23 @@ public class ExpertRegistry {
         return new ArrayList<>(jedis.hkeys(KEY));
     }
 
+    public Long getChatId(String username) {
+        var topics = jedis.hkeys(KEY);
+        for (var topic : topics) {
+            var json = jedis.hget(KEY, topic);
+            if (json == null) continue;
+            try {
+                var expert = mapper.readValue(json, Expert.class);
+                if (expert.name().equals(username)) {
+                    return expert.telegramChatId();
+                }
+            } catch (JsonProcessingException e) {
+                log.warn("Failed to parse expert for topic {}: {}", topic, e.getMessage());
+            }
+        }
+        return null;
+    }
+
     public void unregister(String topic) {
         jedis.hdel(KEY, topic);
     }

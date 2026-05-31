@@ -62,6 +62,10 @@ public class TelegramBot implements LongPollingSingleThreadUpdateConsumer {
         }
     }
 
+    public void sendToChat(Long chatId, String text) {
+        sendMessage(chatId, text);
+    }
+
     public void forwardToExpert(Long expertChatId, String originalQuestion, String fromUsername, String topic) {
         var text = "\uD83D\uDCCC New question about: " + topic + "\n"
             + "From: @" + fromUsername + "\n\n"
