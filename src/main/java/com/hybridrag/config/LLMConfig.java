@@ -41,5 +41,10 @@ public class LLMConfig {
         double temperature,
         String embeddingModel,
         int embeddingDimension
-    ) {}
+    ) {
+        @Override
+        public String toString() {
+            return "LLMProperties{model='" + model + "', apiKey='[REDACTED]', baseUrl='" + baseUrl + "'}";
+        }
+    }
 }
