@@ -7,7 +7,9 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class RagFusion {
@@ -42,7 +44,13 @@ public class RagFusion {
             .toList();
 
         var perQueryResults = futures.stream()
-            .map(CompletableFuture::join)
+            .map(f -> f.orTimeout(5, TimeUnit.SECONDS)
+                .exceptionally(ex -> {
+                    log.warn("Fusion sub-query timed out or failed: {}", ex.getMessage());
+                    return null;
+                })
+                .join())
+            .filter(Objects::nonNull)
             .toList();
 
         var fused = rrf.merge(perQueryResults, topK);

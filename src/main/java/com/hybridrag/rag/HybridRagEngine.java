@@ -8,7 +8,9 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class HybridRagEngine {
@@ -40,7 +42,13 @@ public class HybridRagEngine {
             .toList();
 
         var allResults = futures.stream()
-            .map(CompletableFuture::join)
+            .map(f -> f.orTimeout(5, TimeUnit.SECONDS)
+                .exceptionally(ex -> {
+                    log.warn("Source timed out or failed: {}", ex.getMessage());
+                    return null;
+                })
+                .join())
+            .filter(Objects::nonNull)
             .toList();
 
         return merge(allResults, query);
