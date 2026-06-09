@@ -36,7 +36,7 @@ public class ExpertResolver {
         for (var se : topExperts) {
             if (se.score() >= properties.getActivity().getThreshold()) {
                 log.info("Resolved via activity: {} (score={}) for topic '{}'", se.username(), se.score(), topic);
-                return Optional.of(new ExpertRegistry.Expert(se.username(), null, null, "activity"));
+                return Optional.of(new ExpertRegistry.Expert(se.username(), null, null, "activity-based"));
             }
         }
 

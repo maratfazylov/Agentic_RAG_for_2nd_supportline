@@ -18,16 +18,28 @@ public class RedisConfig {
     @Value("${redis.password}")
     private String password;
 
+    @Value("${redis.pool.max-total:16}")
+    private int poolMaxTotal;
+
+    @Value("${redis.pool.max-idle:8}")
+    private int poolMaxIdle;
+
+    @Value("${redis.pool.min-idle:2}")
+    private int poolMinIdle;
+
+    @Value("${redis.timeout-ms:2000}")
+    private int timeoutMs;
+
     @Bean
     public JedisPooled jedisPooled() {
         var poolConfig = new JedisPoolConfig();
-        poolConfig.setMaxTotal(16);
-        poolConfig.setMaxIdle(8);
-        poolConfig.setMinIdle(2);
+        poolConfig.setMaxTotal(poolMaxTotal);
+        poolConfig.setMaxIdle(poolMaxIdle);
+        poolConfig.setMinIdle(poolMinIdle);
 
         if (password != null && !password.isBlank()) {
-            return new JedisPooled(poolConfig, host, port, 2000, password);
+            return new JedisPooled(poolConfig, host, port, timeoutMs, password);
         }
-        return new JedisPooled(poolConfig, host, port, 2000);
+        return new JedisPooled(poolConfig, host, port, timeoutMs);
     }
 }

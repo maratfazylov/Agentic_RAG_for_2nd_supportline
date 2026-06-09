@@ -16,33 +16,46 @@ import java.util.List;
 public class ConversationMemory {
 
     private static final Logger log = LoggerFactory.getLogger(ConversationMemory.class);
-    private static final String MEMORY_PREFIX = "memory:";
-    private static final int TTL_SECONDS = 86400;
 
     private final JedisPooled jedis;
     private final ObjectMapper mapper;
     private final int maxHistory;
+    private final String memoryPrefix;
+    private final int ttlSeconds;
+
+    /**
+     * Lua script: RPUSH + EXPIRE + LTRIM atomically.
+     * KEYS[1] = key, ARGV[1] = json, ARGV[2] = ttl, ARGV[3] = maxLen
+     */
+    private static final String ADD_MESSAGE_LUA = """
+        redis.call('RPUSH', KEYS[1], ARGV[1])
+        redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+        local len = redis.call('LLEN', KEYS[1])
+        local maxLen = tonumber(ARGV[3])
+        if len > maxLen then
+            redis.call('LTRIM', KEYS[1], len - maxLen, -1)
+        end
+        return len
+        """;
 
     public ConversationMemory(JedisPooled jedis, ObjectMapper mapper,
-                              @Value("${agent.max-history:50}") int maxHistory) {
+                              @Value("${agent.max-history:50}") int maxHistory,
+                              @Value("${agent.memory-prefix:memory:}") String memoryPrefix,
+                              @Value("${agent.memory-ttl-seconds:86400}") int ttlSeconds) {
         this.jedis = jedis;
         this.mapper = mapper;
         this.maxHistory = maxHistory;
+        this.memoryPrefix = memoryPrefix;
+        this.ttlSeconds = ttlSeconds;
     }
 
     public void addMessage(String userId, ChatMessage message) {
         var key = memoryKey(userId);
         try {
             var msgJson = mapper.writeValueAsString(message);
-            jedis.rpush(key, msgJson);
-            jedis.expire(key, TTL_SECONDS);
-
-            var len = jedis.llen(key);
-            if (len > maxHistory) {
-                jedis.lpop(key);
-            }
+            jedis.eval(ADD_MESSAGE_LUA, List.of(key), List.of(msgJson, String.valueOf(ttlSeconds), String.valueOf(maxHistory)));
         } catch (Exception e) {
-            log.error("Failed to save message for user {}: {}", userId, e.getMessage());
+            log.error("Failed to save message for user {}", userId, e);
         }
     }
 
@@ -58,7 +71,7 @@ public class ConversationMemory {
             }
             return result;
         } catch (Exception e) {
-            log.error("Failed to load recent history for user {}: {}", userId, e.getMessage());
+            log.error("Failed to load recent history for user {}", userId, e);
             return new ArrayList<>();
         }
     }
@@ -73,7 +86,7 @@ public class ConversationMemory {
             }
             return result;
         } catch (Exception e) {
-            log.error("Failed to load history for user {}: {}", userId, e.getMessage());
+            log.error("Failed to load history for user {}", userId, e);
             return new ArrayList<>();
         }
     }
@@ -83,6 +96,6 @@ public class ConversationMemory {
     }
 
     private String memoryKey(String userId) {
-        return MEMORY_PREFIX + userId;
+        return memoryPrefix + userId;
     }
 }
