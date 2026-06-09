@@ -55,18 +55,20 @@ public class RagEngine {
 
     /**
      * Собирает контекст для LLM: историю + ретривнутые документы.
+     * Не мутирует ctx — использует только уже установленные документы.
      */
     public String buildRagPrompt(QueryContext ctx) {
         var docs = ctx.getRetrievedDocuments();
-        if (docs == null || docs.isEmpty()) {
+        boolean docsMissing = (docs == null || docs.isEmpty());
+
+        if (docsMissing) {
             docs = retrieve(ctx.getQuery());
-            ctx.setRetrievedDocuments(docs);
         }
 
         var sb = new StringBuilder();
         sb.append(ctx.getSystemPrompt()).append("\n\n");
 
-        if (!docs.isEmpty()) {
+        if (docs != null && !docs.isEmpty()) {
             sb.append("--- Retrieved Context ---\n");
             for (int i = 0; i < docs.size(); i++) {
                 sb.append("[").append(i + 1).append("] ")

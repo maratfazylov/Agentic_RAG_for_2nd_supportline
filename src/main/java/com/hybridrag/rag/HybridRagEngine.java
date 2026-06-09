@@ -6,7 +6,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -21,11 +23,14 @@ public class HybridRagEngine {
     private final List<KnowledgeSource> sources;
     private final RagEngine ragEngine;
     private final SourceMerger sourceMerger;
+    private final ThreadPoolTaskExecutor executor;
 
-    public HybridRagEngine(List<KnowledgeSource> sources, RagEngine ragEngine, SourceMerger sourceMerger) {
+    public HybridRagEngine(List<KnowledgeSource> sources, RagEngine ragEngine,
+                           SourceMerger sourceMerger, ThreadPoolTaskExecutor ragTaskExecutor) {
         this.sources = sources;
         this.ragEngine = ragEngine;
         this.sourceMerger = sourceMerger;
+        this.executor = ragTaskExecutor;
         log.info("HybridRagEngine initialized with sources: {}",
             sources.stream().map(KnowledgeSource::getName).toList());
     }
@@ -38,7 +43,7 @@ public class HybridRagEngine {
                 var results = s.search(query, TOP_K_PER_SOURCE);
                 log.debug("Source '{}' returned {} results", s.getName(), results.size());
                 return new SourceResult(s.getName(), results);
-            }))
+            }, executor))
             .toList();
 
         var allResults = futures.stream()

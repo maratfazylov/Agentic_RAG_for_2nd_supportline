@@ -22,11 +22,19 @@ openrouter:
   base-url: ${OPENROUTER_BASE_URL:https://openrouter.ai/api/v1}
   max-tokens: ${AGENT_MAX_TOKENS:2048}
   temperature: ${AGENT_TEMPERATURE:0.7}
+  connect-timeout-seconds: ${OPENROUTER_CONNECT_TIMEOUT:30}
+  read-timeout-seconds: ${OPENROUTER_READ_TIMEOUT:60}
+  write-timeout-seconds: ${OPENROUTER_WRITE_TIMEOUT:30}
 
 redis:
   host: ${REDIS_HOST:localhost}
   port: ${REDIS_PORT:6379}
   password: ${REDIS_PASSWORD:}
+  pool:
+    max-total: ${REDIS_POOL_MAX_TOTAL:16}
+    max-idle: ${REDIS_POOL_MAX_IDLE:8}
+    min-idle: ${REDIS_POOL_MIN_IDLE:2}
+  timeout-ms: ${REDIS_TIMEOUT_MS:2000}
 
 embedding:
   model: ${EMBEDDING_MODEL:text-embedding-3-small}
@@ -35,6 +43,8 @@ embedding:
 agent:
   system-prompt: ${AGENT_SYSTEM_PROMPT:You are a helpful Hybrid RAG AI Agent. Use the provided context to answer questions accurately.}
   max-history: 50
+  memory-prefix: ${AGENT_MEMORY_PREFIX:memory:}
+  memory-ttl-seconds: ${AGENT_MEMORY_TTL_SECONDS:86400}
 
 expert:
   activity:
